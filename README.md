@@ -20,7 +20,7 @@ embedded in `run:` steps.
 
 ## Architecture
 
-```
+```text
 gha_audit/
 ├── models.py            # dataclasses partagées (RefKind, ActionUsage, ...)
 ├── config.py             # policy centrale (cache TTL, runtimes surveillés)
