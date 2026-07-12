@@ -1,4 +1,4 @@
-# gha-audit
+# GitHub Actions Audit
 
 Audit and automatic update tool for GitHub Actions workflow versions —
 actions and runtimes (Go, Node...), with clear handling of floating refs
