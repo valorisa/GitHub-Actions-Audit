@@ -44,7 +44,7 @@ pytest tests/ -v
 
 ---
 
-## gha-audit (FR)
+## GitHub Actions Audit (FR)
 
 Outil d'audit et de mise à jour automatique des versions dans les
 workflows GitHub Actions — actions et runtimes (Go, Node...), avec une
