@@ -1,5 +1,7 @@
 # Contribuer à gha-audit
 
+> Les faits avant les décisions.
+
 ## Principe directeur sur les abstractions
 
 Toute nouvelle abstraction (interface, protocol, couche supplémentaire,
