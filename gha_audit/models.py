@@ -24,13 +24,44 @@ class RefKind(str, Enum):
 
 
 class VersionStatus(str, Enum):
-    """Statut final attribué à un item audité (action ou runtime)."""
+    """Statut final attribué à un item audité (action ou runtime).
+
+    C'est un jugement de POLICY (voir audit/comparator.py::classify_action /
+    classify_runtime), pas un fait de comparaison brut — pour ça, voir
+    ComparisonResult/ComparisonRelation ci-dessous.
+    """
 
     UP_TO_DATE = "up_to_date"
     OUTDATED = "outdated"
     FLOATING = "floating"
     UNPINNED = "unpinned"
     UNRESOLVABLE = "unresolvable"
+
+
+class ComparisonRelation(str, Enum):
+    """Fait objectif de comparaison entre deux versions — indépendant de
+    toute notion de policy (RefKind, gravité, recommandation...).
+
+    Valeur stable dans le temps : contrairement à VersionStatus, elle ne
+    change pas si la politique de classification évolue.
+    """
+
+    IDENTICAL = "identical"
+    OLDER = "older"     # current < latest
+    NEWER = "newer"     # current > latest (rare : cache en retard, etc.)
+    UNKNOWN = "unknown"  # non comparable (ref non semver, latest absent...)
+
+
+@dataclass(frozen=True)
+class ComparisonResult:
+    """Résultat pur de la comparaison current vs latest — aucune notion de
+    RefKind, de gravité ou de recommandation ici. Produit par
+    audit/comparator.py::compare_versions(), consommé par classify_*()."""
+
+    is_comparable: bool
+    relation: ComparisonRelation
+    current: str | None
+    latest: str | None
 
 
 @dataclass(frozen=True)
@@ -90,6 +121,7 @@ class AuditItem:
     identifier: str            # "actions/checkout" ou "GO_VERSION"
     current: str
     resolved: ResolvedVersion
-    status: VersionStatus
+    comparison: ComparisonResult  # fait objectif brut, avant policy
+    status: VersionStatus         # jugement de policy final (voir classify_*)
     file_path: str
     category: str               # "action" | "runtime"
