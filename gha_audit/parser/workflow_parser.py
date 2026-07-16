@@ -40,9 +40,19 @@ def get_yaml_loader() -> YAML:
 
 def load_workflow(file_path: str | Path):
     """Charge un fichier YAML de workflow, arbre ruamel round-trip."""
-    yaml = get_yaml_loader()
     with open(file_path, encoding="utf-8") as f:
-        return yaml.load(f)
+        content = f.read()
+    return load_workflow_from_text(content)
+
+
+def load_workflow_from_text(content: str):
+    """Charge un workflow depuis une chaîne déjà en mémoire (round-trip).
+
+    Nécessaire pour discovery/remote_discovery.py : une WorkflowSource
+    distante n'a pas de fichier sur disque à ouvrir, seulement du contenu
+    déjà récupéré via l'API GitHub Contents.
+    """
+    return get_yaml_loader().load(content)
 
 
 def extract_actions(data, file_path: str) -> list[ActionUsage]:
