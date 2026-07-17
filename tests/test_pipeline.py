@@ -202,6 +202,9 @@ def test_extract_all_isolates_unparseable_source_without_crashing():
     assert len(parse_errors) == 1
     assert parse_errors[0].source == "broken.yml"
     assert "mapping values" in parse_errors[0].message.lower()
+    assert "Deploy: Production" in parse_errors[0].content_preview
+    assert parse_errors[0].line is not None
+    assert parse_errors[0].column is not None
 
 
 def test_audit_sources_still_completes_with_one_broken_source(tmp_path):

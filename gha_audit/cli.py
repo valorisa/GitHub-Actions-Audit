@@ -59,7 +59,12 @@ def _render_parse_errors(parse_errors: list) -> None:
     """Toujours affiché sur stderr, même avec --quiet — un fichier ignoré
     silencieusement serait pire qu'un message un peu bavard."""
     for error in parse_errors:
-        typer.secho(f"⚠ {error.source} : non parsé ({error.message.splitlines()[0]})", fg=typer.colors.YELLOW, err=True)
+        location = f":{error.line}:{error.column}" if error.line is not None else ""
+        typer.secho(
+            f"⚠ {error.source}{location} — {error.message.splitlines()[0]}",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
 
 
 def _render(items: list[AuditItem], *, as_json: bool, as_markdown: bool) -> None:

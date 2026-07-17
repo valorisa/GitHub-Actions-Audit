@@ -123,10 +123,25 @@ class ParseError:
     faire échouer tout le scan pour un seul fichier malformé — un YAML
     ambigu (ex: un `name:` avec un ':' non échappé) est un cas réel
     rencontré en usage, pas une situation hypothétique.
+
+    `content_preview` capture les premières lignes du contenu en échec :
+    diagnostic permanent plutôt qu'un print() à instrumenter à la main la
+    prochaine fois qu'un scan réel rencontre ce genre de cas.
+
+    `line`/`column`/`exception_type` sont extraits de l'exception ruamel
+    quand disponibles (MarkedYAMLError expose déjà `problem_mark`) — pas
+    une structure inventée, juste ce que l'exception fournit nativement,
+    rendu exploitable sans reparser `message`.
     """
 
     source: str
     message: str
+    content_preview: str = ""
+    line: int | None = None
+    column: int | None = None
+    line: int | None = None
+    column: int | None = None
+    exception_type: str = ""
 
 
 @dataclass

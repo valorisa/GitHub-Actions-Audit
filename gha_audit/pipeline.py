@@ -56,7 +56,16 @@ def extract_all(
         try:
             data = load_workflow_from_text(source.content)
         except YAMLError as exc:
-            parse_errors.append(ParseError(source=source.display_name, message=str(exc)))
+            mark = getattr(exc, "problem_mark", None)
+            parse_errors.append(
+                ParseError(
+                    source=source.display_name,
+                    message=str(exc),
+                    content_preview="\n".join(source.content.splitlines()[:5]),
+                    line=(mark.line + 1) if mark is not None else None,
+                    column=(mark.column + 1) if mark is not None else None,
+                )
+            )
             continue
 
         all_actions.extend(extract_actions(data, source.display_name))
