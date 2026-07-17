@@ -61,7 +61,7 @@ def _render_parse_errors(parse_errors: list) -> None:
     for error in parse_errors:
         location = f":{error.line}:{error.column}" if error.line is not None else ""
         typer.secho(
-            f"⚠ {error.source}{location} — {error.message.splitlines()[0]}",
+            f"⚠ {error.source}{location} [{error.exception_type}] — {error.message.splitlines()[0]}",
             fg=typer.colors.YELLOW,
             err=True,
         )

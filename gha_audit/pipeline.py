@@ -64,6 +64,7 @@ def extract_all(
                     content_preview="\n".join(source.content.splitlines()[:5]),
                     line=(mark.line + 1) if mark is not None else None,
                     column=(mark.column + 1) if mark is not None else None,
+                    exception_type=type(exc).__name__,
                 )
             )
             continue
