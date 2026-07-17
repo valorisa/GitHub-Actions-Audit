@@ -55,6 +55,13 @@ def _parse_fail_on(value: str | None) -> set[VersionStatus]:
     return {VersionStatus(v) for v in requested}
 
 
+def _render_parse_errors(parse_errors: list) -> None:
+    """Toujours affiché sur stderr, même avec --quiet — un fichier ignoré
+    silencieusement serait pire qu'un message un peu bavard."""
+    for error in parse_errors:
+        typer.secho(f"⚠ {error.source} : non parsé ({error.message.splitlines()[0]})", fg=typer.colors.YELLOW, err=True)
+
+
 def _render(items: list[AuditItem], *, as_json: bool, as_markdown: bool) -> None:
     if as_json:
         typer.echo(format_json(items))
@@ -103,7 +110,8 @@ def scan(
     statuses = _parse_fail_on(fail_on)
     config = GhaAuditConfig(github_token=token)
 
-    items = _run_with_error_handling(lambda: run_local_scan(path, config))
+    items, parse_errors = _run_with_error_handling(lambda: run_local_scan(path, config))
+    _render_parse_errors(parse_errors)
 
     exit_code = _exit_code_for(items, statuses)
     if not quiet or exit_code != EXIT_OK:
@@ -135,9 +143,10 @@ def scan_org(
     statuses = _parse_fail_on(fail_on)
     config = GhaAuditConfig(github_token=token)
 
-    items = _run_with_error_handling(
+    items, parse_errors = _run_with_error_handling(
         lambda: run_remote_scan(owner, config, include_forks=include_forks, include_archived=include_archived)
     )
+    _render_parse_errors(parse_errors)
 
     exit_code = _exit_code_for(items, statuses)
     if not quiet or exit_code != EXIT_OK:

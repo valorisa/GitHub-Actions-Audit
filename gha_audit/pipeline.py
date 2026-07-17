@@ -18,12 +18,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ruamel.yaml import YAMLError
+
 from gha_audit.audit.comparator import build_audit_items
 from gha_audit.config import GhaAuditConfig
 from gha_audit.discovery.base import WorkflowSource
 from gha_audit.discovery.local_discovery import load_local_sources
 from gha_audit.discovery.remote_discovery import load_remote_sources
-from gha_audit.models import ActionUsage, AuditItem, RuntimeVar
+from gha_audit.models import ActionUsage, AuditItem, ParseError, RuntimeVar
 from gha_audit.parser.workflow_parser import (
     extract_actions,
     extract_go_installs,
@@ -36,22 +38,32 @@ from gha_audit.resolver.github_client import GitHubClient, resolve_github_token
 from gha_audit.resolver.runtime_resolver import RuntimeClient, resolve_all_runtimes
 
 
-def extract_all(sources: list[WorkflowSource], config: GhaAuditConfig) -> tuple[list[ActionUsage], list[RuntimeVar]]:
+def extract_all(
+    sources: list[WorkflowSource], config: GhaAuditConfig
+) -> tuple[list[ActionUsage], list[RuntimeVar], list[ParseError]]:
     """Parse toutes les sources (locales ou distantes) en une seule passe.
 
-    Étape purement CPU, aucun réseau — séparée de la résolution pour
-    rester testable sans mock httpx si un jour le besoin s'en fait sentir.
+    Étape purement CPU, aucun réseau. Chaque source est isolée : un YAML
+    ambigu ou malformé (ex: un `name:` avec un ':' non échappé — un cas
+    réel rencontré en usage, pas hypothétique) est écarté et consigné en
+    ParseError, sans jamais faire échouer les autres sources du même scan.
     """
     all_actions: list[ActionUsage] = []
     all_runtimes: list[RuntimeVar] = []
+    parse_errors: list[ParseError] = []
 
     for source in sources:
-        data = load_workflow_from_text(source.content)
+        try:
+            data = load_workflow_from_text(source.content)
+        except YAMLError as exc:
+            parse_errors.append(ParseError(source=source.display_name, message=str(exc)))
+            continue
+
         all_actions.extend(extract_actions(data, source.display_name))
         all_actions.extend(extract_go_installs(data, source.display_name))
         all_runtimes.extend(extract_runtime_vars(data, source.display_name, config.known_runtime_vars))
 
-    return all_actions, all_runtimes
+    return all_actions, all_runtimes, parse_errors
 
 
 def audit_sources(
@@ -59,20 +71,21 @@ def audit_sources(
     config: GhaAuditConfig,
     github_client: GitHubClient,
     runtime_client: RuntimeClient,
-) -> list[AuditItem]:
-    """Cœur du pipeline : sources déjà chargées -> AuditItem finaux.
+) -> tuple[list[AuditItem], list[ParseError]]:
+    """Cœur du pipeline : sources déjà chargées -> (AuditItem finaux, erreurs de parsing).
 
     Les clients sont injectés (jamais construits ici) : c'est ce qui rend
     cette fonction testable avec des transports httpx.MockTransport, sans
     dépendre de run_local_scan/run_remote_scan qui, eux, construisent les
     vrais clients réseau.
     """
-    actions, runtimes = extract_all(sources, config)
+    actions, runtimes, parse_errors = extract_all(sources, config)
 
     action_resolutions = resolve_all(github_client, actions)
     runtime_resolutions = resolve_all_runtimes(runtime_client, runtimes)
 
-    return build_audit_items(actions, action_resolutions, runtimes, runtime_resolutions)
+    items = build_audit_items(actions, action_resolutions, runtimes, runtime_resolutions)
+    return items, parse_errors
 
 
 def _build_clients(config: GhaAuditConfig) -> tuple[GitHubClient, RuntimeClient]:
@@ -89,9 +102,9 @@ def _build_clients(config: GhaAuditConfig) -> tuple[GitHubClient, RuntimeClient]
     return github_client, runtime_client
 
 
-def run_local_scan(root: str | Path, config: GhaAuditConfig | None = None) -> list[AuditItem]:
+def run_local_scan(root: str | Path, config: GhaAuditConfig | None = None) -> tuple[list[AuditItem], list[ParseError]]:
     """Scanne un dossier local (un repo, ou plusieurs côte à côte comme
-    ~/Projets) et renvoie les AuditItem résultants."""
+    ~/Projets) et renvoie (AuditItem résultants, erreurs de parsing)."""
     config = config or GhaAuditConfig()
     sources = load_local_sources(root)
     github_client, runtime_client = _build_clients(config)
@@ -107,7 +120,7 @@ def run_remote_scan(
     config: GhaAuditConfig | None = None,
     include_forks: bool = False,
     include_archived: bool = False,
-) -> list[AuditItem]:
+) -> tuple[list[AuditItem], list[ParseError]]:
     """Scanne tous les repos d'un owner GitHub via l'API, sans clone local."""
     config = config or GhaAuditConfig()
     github_client, runtime_client = _build_clients(config)

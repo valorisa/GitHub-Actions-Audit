@@ -37,7 +37,7 @@ def _item(identifier: str, status: VersionStatus, category: str = "action") -> A
 
 
 def test_scan_console_output_by_default(monkeypatch):
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("actions/checkout", VersionStatus.OUTDATED)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("actions/checkout", VersionStatus.OUTDATED)], []))
 
     result = runner.invoke(cli.app, ["scan", "."])
 
@@ -47,7 +47,7 @@ def test_scan_console_output_by_default(monkeypatch):
 
 
 def test_scan_json_output(monkeypatch):
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("actions/checkout", VersionStatus.OUTDATED)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("actions/checkout", VersionStatus.OUTDATED)], []))
 
     result = runner.invoke(cli.app, ["scan", ".", "--json"])
 
@@ -57,7 +57,7 @@ def test_scan_json_output(monkeypatch):
 
 
 def test_scan_markdown_output(monkeypatch):
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("actions/checkout", VersionStatus.OUTDATED)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("actions/checkout", VersionStatus.OUTDATED)], []))
 
     result = runner.invoke(cli.app, ["scan", ".", "--markdown"])
 
@@ -69,7 +69,7 @@ def test_scan_markdown_output(monkeypatch):
 
 
 def test_scan_fail_on_triggers_nonzero_exit_when_matched(monkeypatch):
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("actions/checkout", VersionStatus.OUTDATED)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("actions/checkout", VersionStatus.OUTDATED)], []))
 
     result = runner.invoke(cli.app, ["scan", ".", "--fail-on", "outdated"])
 
@@ -77,7 +77,7 @@ def test_scan_fail_on_triggers_nonzero_exit_when_matched(monkeypatch):
 
 
 def test_scan_fail_on_does_not_trigger_when_no_match(monkeypatch):
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("actions/checkout", VersionStatus.UP_TO_DATE)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("actions/checkout", VersionStatus.UP_TO_DATE)], []))
 
     result = runner.invoke(cli.app, ["scan", ".", "--fail-on", "outdated"])
 
@@ -87,7 +87,7 @@ def test_scan_fail_on_does_not_trigger_when_no_match(monkeypatch):
 def test_scan_no_fail_on_always_exits_zero_regardless_of_findings(monkeypatch):
     """Comportement par défaut : rapport seul, jamais de rupture de
     pipeline CI sans opt-in explicite via --fail-on."""
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("actions/checkout", VersionStatus.OUTDATED)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("actions/checkout", VersionStatus.OUTDATED)], []))
 
     result = runner.invoke(cli.app, ["scan", "."])
 
@@ -95,7 +95,7 @@ def test_scan_no_fail_on_always_exits_zero_regardless_of_findings(monkeypatch):
 
 
 def test_scan_invalid_fail_on_value_exits_config_error(monkeypatch):
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([], []))
 
     result = runner.invoke(cli.app, ["scan", ".", "--fail-on", "totally-invalid-status"])
 
@@ -103,7 +103,7 @@ def test_scan_invalid_fail_on_value_exits_config_error(monkeypatch):
 
 
 def test_scan_fail_on_multiple_statuses(monkeypatch):
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("securego/gosec", VersionStatus.FLOATING)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("securego/gosec", VersionStatus.FLOATING)], []))
 
     result = runner.invoke(cli.app, ["scan", ".", "--fail-on", "outdated,floating"])
 
@@ -114,7 +114,7 @@ def test_scan_fail_on_multiple_statuses(monkeypatch):
 
 
 def test_scan_quiet_suppresses_output_when_no_findings(monkeypatch):
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("actions/checkout", VersionStatus.UP_TO_DATE)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("actions/checkout", VersionStatus.UP_TO_DATE)], []))
 
     result = runner.invoke(cli.app, ["scan", ".", "--fail-on", "outdated", "--quiet"])
 
@@ -125,7 +125,7 @@ def test_scan_quiet_suppresses_output_when_no_findings(monkeypatch):
 def test_scan_quiet_still_shows_output_when_findings_exist(monkeypatch):
     """--quiet masque le bruit quand tout va bien, mais ne cache jamais
     un vrai problème détecté."""
-    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: [_item("actions/checkout", VersionStatus.OUTDATED)])
+    monkeypatch.setattr(cli, "run_local_scan", lambda path, config: ([_item("actions/checkout", VersionStatus.OUTDATED)], []))
 
     result = runner.invoke(cli.app, ["scan", ".", "--fail-on", "outdated", "--quiet"])
 
@@ -147,6 +147,24 @@ def test_scan_rate_limit_exceeded_exits_network_error(monkeypatch):
     assert result.exit_code == cli.EXIT_NETWORK_ERROR
 
 
+def test_scan_shows_parse_errors_on_stderr_even_with_quiet(monkeypatch):
+    """Régression : un fichier non parsé doit toujours être signalé,
+    même en --quiet — le silencer serait pire qu'un message bavard."""
+    from gha_audit.models import ParseError
+
+    parse_error = ParseError(source="broken.yml", message="mapping values are not allowed here")
+    monkeypatch.setattr(
+        cli,
+        "run_local_scan",
+        lambda path, config: ([_item("actions/checkout", VersionStatus.UP_TO_DATE)], [parse_error]),
+    )
+
+    result = runner.invoke(cli.app, ["scan", ".", "--quiet"])
+
+    assert "broken.yml" in result.stderr
+    assert "mapping values" in result.stderr
+
+
 # --- scan-org ---------------------------------------------------------
 
 
@@ -156,7 +174,7 @@ def test_scan_org_basic(monkeypatch):
     def fake_run_remote_scan(owner, config, include_forks=False, include_archived=False):
         captured["owner"] = owner
         captured["include_forks"] = include_forks
-        return [_item("valorisa/stormgrill", VersionStatus.UP_TO_DATE)]
+        return [_item("valorisa/stormgrill", VersionStatus.UP_TO_DATE)], []
 
     monkeypatch.setattr(cli, "run_remote_scan", fake_run_remote_scan)
 
@@ -168,7 +186,7 @@ def test_scan_org_basic(monkeypatch):
 
 
 def test_scan_org_requires_owner(monkeypatch):
-    monkeypatch.setattr(cli, "run_remote_scan", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "run_remote_scan", lambda *a, **k: ([], []))
     result = runner.invoke(cli.app, ["scan-org"])
     assert result.exit_code != cli.EXIT_OK
 

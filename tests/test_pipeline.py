@@ -70,10 +70,11 @@ def test_extract_all_on_fixture_workflow():
     sources = [WorkflowSource(display_name="ci.yml", content=content, local_path=FIXTURE)]
     config = GhaAuditConfig()
 
-    actions, runtimes = pipeline.extract_all(sources, config)
+    actions, runtimes, parse_errors = pipeline.extract_all(sources, config)
 
     assert len(actions) == 12  # 11 `uses:` + le go install extrait séparément... voir workflow_parser
     assert len(runtimes) == 2
+    assert parse_errors == []
 
 
 # --- audit_sources : cœur injectable, clients mockés -----------------------
@@ -85,7 +86,9 @@ def test_audit_sources_full_pipeline_on_fixture_workflow(tmp_path):
     config = GhaAuditConfig()
     github_client, runtime_client = _mocked_clients(tmp_path)
 
-    items = pipeline.audit_sources(sources, config, github_client, runtime_client)
+    items, parse_errors = pipeline.audit_sources(sources, config, github_client, runtime_client)
+
+    assert parse_errors == []
 
     assert len(items) == 14  # 12 actions + 2 runtimes
     by_id = {item.identifier: item for item in items}
@@ -127,8 +130,9 @@ def test_run_local_scan_wires_discovery_to_pipeline(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline, "_build_clients", fake_build_clients)
 
-    items = pipeline.run_local_scan(repo)
+    items, parse_errors = pipeline.run_local_scan(repo)
     assert len(items) == 14
+    assert parse_errors == []
 
 
 def test_run_local_scan_on_multiple_sibling_repos(tmp_path, monkeypatch):
@@ -142,8 +146,9 @@ def test_run_local_scan_on_multiple_sibling_repos(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline, "_build_clients", fake_build_clients)
 
-    items = pipeline.run_local_scan(tmp_path)
+    items, parse_errors = pipeline.run_local_scan(tmp_path)
     assert len(items) == 28  # 14 items x 2 repos
+    assert parse_errors == []
 
 
 # --- run_remote_scan : wiring discovery distante + clients réels (mockés) -
@@ -155,5 +160,72 @@ def test_run_remote_scan_wires_discovery_to_pipeline(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline, "_build_clients", fake_build_clients)
 
-    items = pipeline.run_remote_scan("valorisa")
+    items, parse_errors = pipeline.run_remote_scan("valorisa")
     assert len(items) == 14
+    assert parse_errors == []
+
+
+# --- Régression : un YAML malformé ne doit jamais faire échouer tout le scan
+#
+# Trouvé en usage réel (scan-org sur un vrai compte GitHub) : un fichier de
+# workflow avec un `name:` contenant un ':' non échappé (ex: "name: Deploy:
+# Production") fait planter le parser ruamel round-trip (ScannerError:
+# "mapping values are not allowed here"). Avant ce correctif, une seule
+# source dans cet état faisait échouer tout `scan-org`, y compris les repos
+# sains scannés dans le même batch.
+
+_MALFORMED_WORKFLOW = """name: Deploy: Production
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+"""
+
+
+def test_extract_all_isolates_unparseable_source_without_crashing():
+    good_content = FIXTURE.read_text(encoding="utf-8")
+    sources = [
+        WorkflowSource(display_name="good.yml", content=good_content, local_path=FIXTURE),
+        WorkflowSource(display_name="broken.yml", content=_MALFORMED_WORKFLOW, local_path=None),
+    ]
+    config = GhaAuditConfig()
+
+    actions, runtimes, parse_errors = pipeline.extract_all(sources, config)
+
+    # La source valide est traitée normalement malgré l'échec de l'autre.
+    assert len(actions) == 12
+    assert len(runtimes) == 2
+
+    # La source cassée est signalée, pas silencieusement perdue.
+    assert len(parse_errors) == 1
+    assert parse_errors[0].source == "broken.yml"
+    assert "mapping values" in parse_errors[0].message.lower()
+
+
+def test_audit_sources_still_completes_with_one_broken_source(tmp_path):
+    good_content = FIXTURE.read_text(encoding="utf-8")
+    sources = [
+        WorkflowSource(display_name="good.yml", content=good_content, local_path=FIXTURE),
+        WorkflowSource(display_name="broken.yml", content=_MALFORMED_WORKFLOW, local_path=None),
+    ]
+    config = GhaAuditConfig()
+    github_client, runtime_client = _mocked_clients(tmp_path)
+
+    items, parse_errors = pipeline.audit_sources(sources, config, github_client, runtime_client)
+
+    assert len(items) == 14  # les 14 items de la source saine, malgré l'autre en échec
+    assert len(parse_errors) == 1
+    assert parse_errors[0].source == "broken.yml"
+
+
+def test_extract_all_with_only_broken_sources_returns_empty_but_no_exception():
+    sources = [WorkflowSource(display_name="broken.yml", content=_MALFORMED_WORKFLOW, local_path=None)]
+    config = GhaAuditConfig()
+
+    actions, runtimes, parse_errors = pipeline.extract_all(sources, config)
+
+    assert actions == []
+    assert runtimes == []
+    assert len(parse_errors) == 1

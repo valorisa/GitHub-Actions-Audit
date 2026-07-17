@@ -114,6 +114,21 @@ class ResolvedVersion:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class ParseError:
+    """Une source dont le contenu YAML n'a pas pu être parsé.
+
+    Un fait, pas une décision : le pipeline (voir pipeline.py::extract_all)
+    isole la source en échec et continue sur les autres plutôt que de
+    faire échouer tout le scan pour un seul fichier malformé — un YAML
+    ambigu (ex: un `name:` avec un ':' non échappé) est un cas réel
+    rencontré en usage, pas une situation hypothétique.
+    """
+
+    source: str
+    message: str
+
+
 @dataclass
 class AuditItem:
     """Une ligne du rapport d'audit — action ou runtime, unifiées."""
