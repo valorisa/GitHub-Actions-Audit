@@ -27,6 +27,26 @@ def test_get_latest_release_success(tmp_path):
     assert result["tag_name"] == "v5.0.0"
 
 
+def test_client_follows_redirects_transparently(tmp_path):
+    """Régression : trouvé en usage réel sur azure/trusted-signing-action,
+    renommé/déplacé côté GitHub. Un 301 est un cas normal, pas une erreur —
+    le client doit suivre la redirection sans lever d'exception."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/azure/trusted-signing-action/releases/latest":
+            return httpx.Response(
+                301,
+                headers={"Location": "https://api.github.com/repositories/771200572/releases/latest"},
+            )
+        if request.url.path == "/repositories/771200572/releases/latest":
+            return httpx.Response(200, json={"tag_name": "v0.5.9"})
+        raise AssertionError(f"Unexpected call: {request.url.path}")
+
+    client = make_client(tmp_path, handler)
+    result = client.get_latest_release("azure", "trusted-signing-action")
+    assert result["tag_name"] == "v0.5.9"
+
+
 def test_get_latest_release_404_returns_none(tmp_path):
     """zaproxy/action-baseline ne publie pas de Release GitHub formelle —
     404 est un résultat valide, pas une erreur à faire remonter."""

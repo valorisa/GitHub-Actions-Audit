@@ -79,7 +79,14 @@ class GitHubClient:
         # `transport` injectable : c'est ce qui permet de tester ce client
         # avec httpx.MockTransport, sans jamais dépendre du réseau réel.
         self._client = httpx.Client(
-            base_url=GITHUB_API_BASE, headers=headers, transport=transport, timeout=10.0
+            base_url=GITHUB_API_BASE,
+            headers=headers,
+            transport=transport,
+            timeout=10.0,
+            # Un repo renommé/déplacé renvoie un 301 vers sa nouvelle URL
+            # canonique — c'est un cas normal (ex: azure/trusted-signing-action
+            # rencontré en usage réel), pas une erreur à faire remonter.
+            follow_redirects=True,
         )
 
     def close(self) -> None:

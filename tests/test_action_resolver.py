@@ -1,12 +1,13 @@
 """Tests de action_resolver.py — cas réels tirés du workflow d'exemple."""
 
 import httpx
+import pytest
 
 from gha_audit.models import ActionUsage, RefKind, YamlPath
 from gha_audit.parser.ref_classifier import classify_ref, parse_uses
 from gha_audit.resolver.action_resolver import resolve_action_version, resolve_all
 from gha_audit.resolver.cache import DiskCache
-from gha_audit.resolver.github_client import GitHubClient
+from gha_audit.resolver.github_client import GitHubClient, RateLimitExceeded
 
 
 def _action_from_raw(raw: str) -> ActionUsage:
@@ -178,3 +179,52 @@ def test_resolve_all_on_full_workflow_action_set(tmp_path):
     assert resolved["honnef.co/go"].source == "unresolvable"
     assert resolved["zaproxy/action-baseline"].latest == "v0.11.0"
     assert resolved["actions/checkout"].latest == "v9.9.9"
+
+
+# --- Régression : une erreur réseau sur UNE action ne doit jamais faire
+# échouer tout le scan (trouvé en usage réel : redirection 301 non suivie
+# sur azure/trusted-signing-action a fait planter tout un scan-org).
+
+
+def test_resolve_action_version_network_error_returns_unresolvable_not_exception(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("unreachable", request=request)
+
+    action = _action_from_raw("someorg/flaky-repo@v1")
+    client = make_client(tmp_path, handler)
+    resolved = resolve_action_version(client, action)
+
+    assert resolved.latest is None
+    assert resolved.source == "unresolvable"
+    assert "someorg/flaky-repo" in resolved.note
+
+
+def test_resolve_all_continues_after_one_action_network_error(tmp_path):
+    """Le cœur de la régression : deux actions, une seule en échec réseau —
+    l'autre doit quand même être résolue normalement."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "flaky-repo" in request.url.path:
+            raise httpx.ConnectError("unreachable", request=request)
+        return httpx.Response(200, json={"tag_name": "v5.0.0"})
+
+    actions = [_action_from_raw("someorg/flaky-repo@v1"), _action_from_raw("actions/checkout@v4")]
+    client = make_client(tmp_path, handler)
+    resolved = resolve_all(client, actions)
+
+    assert resolved["someorg/flaky-repo"].source == "unresolvable"
+    assert resolved["actions/checkout"].latest == "v5.0.0"
+
+
+def test_resolve_action_version_rate_limit_still_propagates(tmp_path):
+    """RateLimitExceeded n'est PAS absorbé comme les autres erreurs réseau :
+    c'est un état de session compromis, pas un problème isolé à une action."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, headers={"X-RateLimit-Remaining": "0"})
+
+    action = _action_from_raw("actions/checkout@v4")
+    client = make_client(tmp_path, handler)
+
+    with pytest.raises(RateLimitExceeded):
+        resolve_action_version(client, action)

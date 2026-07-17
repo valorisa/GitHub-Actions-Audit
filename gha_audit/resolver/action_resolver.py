@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import re
 
+import httpx
+
 from gha_audit.models import ActionUsage, RefKind, ResolvedVersion
-from gha_audit.resolver.github_client import GitHubClient
+from gha_audit.resolver.github_client import GitHubClient, RateLimitExceeded
 
 # Tags candidats à un tri semver : v1, v1.2, v1.2.3 (avec ou sans préfixe v).
 _SEMVER_TAG_RE = re.compile(r"^v?\d+(\.\d+){0,2}$")
@@ -61,6 +63,13 @@ def resolve_action_version(client: GitHubClient, action: ActionUsage) -> Resolve
     Ne fait aucun appel réseau pour PINNED_SHA (rien à résoudre : le SHA
     EST la version) ni pour NON_GITHUB_RELEASE (hors écosystème, deviner
     serait pire que de ne rien dire).
+
+    Isolation par action (trouvé en usage réel : un repo renommé ou une
+    erreur réseau transitoire sur UNE action ne doit jamais faire échouer
+    tout un scan-org) : tout httpx.HTTPError devient UNRESOLVABLE plutôt
+    que de remonter. RateLimitExceeded fait exception — c'est un état de
+    session compromis (le budget API est épuisé pour toute action
+    suivante aussi), donc il continue de se propager pour arrêter le scan.
     """
     if action.kind is RefKind.PINNED_SHA:
         return ResolvedVersion(
@@ -78,11 +87,20 @@ def resolve_action_version(client: GitHubClient, action: ActionUsage) -> Resolve
             note="Hors écosystème GitHub Releases (ex: module Go) — pin manuel recommandé.",
         )
 
-    release = client.get_latest_release(action.owner, action.repo)
-    if release and release.get("tag_name"):
-        return ResolvedVersion(latest=release["tag_name"], source="releases_latest", confidence="high")
-
-    return _resolve_via_tags(client, action.owner, action.repo)
+    try:
+        release = client.get_latest_release(action.owner, action.repo)
+        if release and release.get("tag_name"):
+            return ResolvedVersion(latest=release["tag_name"], source="releases_latest", confidence="high")
+        return _resolve_via_tags(client, action.owner, action.repo)
+    except RateLimitExceeded:
+        raise
+    except httpx.HTTPError as exc:
+        return ResolvedVersion(
+            latest=None,
+            source="unresolvable",
+            confidence="low",
+            note=f"Erreur réseau lors de la résolution de {action.slug} : {exc}",
+        )
 
 
 def resolve_all(client: GitHubClient, actions: list[ActionUsage]) -> dict[str, ResolvedVersion]:
