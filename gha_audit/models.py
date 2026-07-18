@@ -140,9 +140,6 @@ class ParseError:
     line: int | None = None
     column: int | None = None
     exception_type: str = ""
-    line: int | None = None
-    column: int | None = None
-    exception_type: str = ""
 
 
 @dataclass

@@ -4,9 +4,12 @@ Audit and automatic update tool for GitHub Actions workflow versions —
 actions and runtimes (Go, Node...), with clear handling of floating refs
 (`@master`, `@latest`) and versions outside the GitHub Releases ecosystem.
 
-**Status:** early scaffolding (parser, classifier, GitHub API resolver
-with cache, local + remote multi-repo discovery). Version comparison,
-YAML rewriting, diff generation, and PR automation are not implemented yet.
+**Status:** read-only pipeline complete and functional — discovery
+(local + remote), parsing, resolution (GitHub API + Go/Node runtimes),
+version comparison, and reporting (console/JSON/markdown), all wired
+through a CLI (`gha-audit scan`, `scan-org`). 135 tests passing.
+YAML rewriting (`--fix`), diff generation, and PR automation
+(`writer/`) are not implemented yet — see the roadmap below.
 
 ## Why not just Dependabot?
 
@@ -22,18 +25,33 @@ embedded in `run:` steps.
 
 ```text
 gha_audit/
-├── models.py            # dataclasses partagées (RefKind, ActionUsage, ...)
+├── models.py            # dataclasses partagées (RefKind, ActionUsage, ComparisonResult, ...)
 ├── config.py             # policy centrale (cache TTL, runtimes surveillés)
+├── pipeline.py            # orchestration : discovery → parser → resolver → comparator
+├── cli.py                 # CLI (typer) : scan, scan-org, version — aucune décision métier
 ├── parser/                # extraction pure, aucun I/O réseau
 │   ├── ref_classifier.py  # classification owner/repo@ref
 │   └── workflow_parser.py # extraction depuis le YAML (ruamel, round-trip)
 ├── resolver/               # résolution des dernières versions stables
 │   ├── cache.py            # cache disque à TTL
-│   └── github_client.py    # wrapper httpx + endpoints API GitHub
-└── discovery/               # où trouver les workflows
-    ├── local_discovery.py    # scan filesystem (ex: ~/Projets)
-    └── remote_discovery.py   # scan via API, sans clone
+│   ├── github_client.py    # wrapper httpx + endpoints API GitHub
+│   ├── action_resolver.py  # résolution des actions (releases/tags)
+│   └── runtime_resolver.py # résolution Go (go.dev) / Node (nodejs.org, LTS)
+├── discovery/               # où trouver les workflows
+│   ├── local_discovery.py    # scan filesystem (ex: ~/Projets)
+│   └── remote_discovery.py   # scan via API, sans clone
+└── audit/                     # comparaison (pure) + policy + rapport
+    ├── comparator.py          # compare_versions() pur + classify_*() policy
+    └── report.py              # rendu console / JSON / markdown
 ```
+
+Voir `docs/adr/` pour les décisions de conception documentées.
+
+## Roadmap
+
+En phase de validation sur des scans réels avant d'ouvrir `writer/`
+(réécriture YAML, `--fix`, `UpdatePlan`, idempotence) — voir
+`CONTRIBUTING.md` pour le principe directeur sur les abstractions.
 
 ## Development
 
@@ -51,10 +69,12 @@ workflows GitHub Actions — actions et runtimes (Go, Node...), avec une
 gestion explicite des refs flottantes (`@master`, `@latest`) et des
 versions hors écosystème GitHub Releases.
 
-**Statut :** squelette initial (parser, classificateur, résolveur API
-GitHub avec cache, découverte multi-repos locale + distante). La
-comparaison de versions, la réécriture YAML, la génération de diff et
-l'automatisation PR ne sont pas encore implémentées.
+**Statut :** pipeline en lecture seule complet et fonctionnel — découverte
+(locale + distante), parsing, résolution (API GitHub + runtimes Go/Node),
+comparaison de versions, et rapport (console/JSON/markdown), le tout
+exposé via une CLI (`gha-audit scan`, `scan-org`). 135 tests verts.
+La réécriture YAML (`--fix`), la génération de diff et l'automatisation
+PR (`writer/`) ne sont pas encore implémentées — voir la roadmap plus bas.
 
 ## Pourquoi pas juste Dependabot ?
 
