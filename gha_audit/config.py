@@ -31,3 +31,10 @@ class GhaAuditConfig:
     known_runtime_vars: frozenset[str] = field(default_factory=lambda: DEFAULT_RUNTIME_VAR_NAMES)
     check_sha_age: bool = False  # cf. architecture: un SHA pinné n'est jamais
     # "obsolète" par défaut ; ce flag active un audit de fraîcheur optionnel.
+    max_concurrent_requests: int = 8  # borne de parallélisation des résolutions
+    # d'actions (voir resolver/action_resolver.py::DEFAULT_MAX_WORKERS) —
+    # levier de performance le plus rentable mesuré en usage réel.
+    node_track: str = "lts"  # "lts" | "current" — piste de comparaison pour
+    # NODE_VERSION. Par défaut LTS : une variable comme NODE_VERSION: '18'
+    # est presque toujours un choix volontaire de LTS, pas un simple retard
+    # de mise à jour vers la dernière version "current".

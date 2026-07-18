@@ -1,5 +1,8 @@
 """Tests de action_resolver.py — cas réels tirés du workflow d'exemple."""
 
+import threading
+import time
+
 import httpx
 import pytest
 
@@ -142,6 +145,83 @@ def test_resolve_all_deduplicates_by_slug(tmp_path):
 
     assert calls["count"] == 1
     assert resolved["actions/checkout"].latest == "v5.0.0"
+
+
+# --- Parallélisation bornée : correction préservée, borne respectée -------
+
+
+def test_resolve_all_respects_max_workers_bound(tmp_path):
+    """La borne de concurrence est réellement appliquée, pas juste
+    déclarative : on mesure le pic de requêtes simultanées."""
+    lock = threading.Lock()
+    state = {"current": 0, "peak": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with lock:
+            state["current"] += 1
+            state["peak"] = max(state["peak"], state["current"])
+        time.sleep(0.05)  # assez long pour garantir un chevauchement réel
+        with lock:
+            state["current"] -= 1
+        return httpx.Response(200, json={"tag_name": "v1.0.0"})
+
+    actions = [_action_from_raw(f"org{i}/repo{i}@v1") for i in range(20)]
+    client = make_client(tmp_path, handler)
+    resolved = resolve_all(client, actions, max_workers=4)
+
+    assert state["peak"] <= 4
+    assert state["peak"] > 1  # confirme qu'il y a bien EU du parallélisme
+    assert len(resolved) == 20
+
+
+def test_resolve_all_parallel_results_match_sequential_correctness(tmp_path):
+    """La parallélisation ne doit rien changer au résultat — même jeu
+    d'actions, mêmes statuts, peu importe l'ordre d'arrivée des réponses."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if "zaproxy" in path and path.endswith("/releases/latest"):
+            return httpx.Response(404)
+        if "zaproxy" in path and path.endswith("/tags"):
+            return httpx.Response(200, json=[{"name": "v0.10.0"}, {"name": "v0.11.0"}])
+        return httpx.Response(200, json={"tag_name": "v9.9.9"})
+
+    raws = [
+        "actions/checkout@v4",
+        "securego/gosec@master",
+        "honnef.co/go/tools/cmd/staticcheck@latest",
+        "zaproxy/action-baseline@v0.10.0",
+    ]
+    actions = [_action_from_raw(raw) for raw in raws]
+    client = make_client(tmp_path, handler)
+    resolved = resolve_all(client, actions, max_workers=4)
+
+    assert resolved["actions/checkout"].latest == "v9.9.9"
+    assert resolved["securego/gosec"].latest == "v9.9.9"  # résolu, statut FLOATING décidé ailleurs
+    assert resolved["honnef.co/go"].source == "unresolvable"
+    assert resolved["zaproxy/action-baseline"].latest == "v0.11.0"
+
+
+def test_resolve_all_rate_limit_still_propagates_when_parallel(tmp_path):
+    """RateLimitExceeded doit toujours interrompre tout le lot, même
+    quand une partie du travail est déjà en vol dans d'autres threads."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, headers={"X-RateLimit-Remaining": "0"})
+
+    actions = [_action_from_raw(f"org{i}/repo{i}@v1") for i in range(10)]
+    client = make_client(tmp_path, handler)
+
+    with pytest.raises(RateLimitExceeded):
+        resolve_all(client, actions, max_workers=4)
+
+
+def test_resolve_all_empty_list_returns_empty_dict_without_spawning_pool(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Ne devrait jamais être appelé")
+
+    client = make_client(tmp_path, handler)
+    assert resolve_all(client, [], max_workers=4) == {}
 
 
 def test_resolve_all_on_full_workflow_action_set(tmp_path):

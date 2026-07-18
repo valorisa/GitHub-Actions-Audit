@@ -1,6 +1,7 @@
 """Tests du cache disque à TTL."""
 
 import json
+import threading
 import time
 
 from gha_audit.resolver.cache import MISSING, DiskCache
@@ -133,3 +134,26 @@ def test_get_and_get_entry_agree_on_value(tmp_path):
     cache.set_entry("key1", {"a": 1}, etag='"xyz"')
 
     assert cache.get("key1") == cache.get_entry("key1").value
+
+
+# --- Thread-safety : prérequis de la parallélisation bornée des résolutions
+
+
+def test_concurrent_writes_do_not_corrupt_or_lose_entries(tmp_path):
+    """Plusieurs threads qui écrivent des clés différentes en même temps
+    ne doivent ni corrompre le fichier JSON ni perdre d'entrée."""
+    cache = DiskCache(tmp_path / "cache.json", ttl_seconds=3600)
+
+    def writer(i: int) -> None:
+        cache.set_entry(f"key{i}", {"n": i}, etag=f'"etag-{i}"')
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for i in range(50):
+        entry = cache.get_entry(f"key{i}")
+        assert entry.value == {"n": i}
+        assert entry.etag == f'"etag-{i}"'

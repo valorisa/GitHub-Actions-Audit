@@ -99,17 +99,44 @@ class GitHubClient:
         self.close()
 
     def _get(self, path: str) -> Any | None:
-        cached = self._cache.get(path)
-        if cached is not MISSING:
-            return cached
+        """Résout `path` en respectant, dans l'ordre :
 
-        response = self._client.get(path)
+        1. Fast-path TTL (inchangé depuis l'étape 1) : entrée fraîche en
+           cache -> zéro appel réseau, comme avant l'introduction de l'ETag.
+        2. TTL expiré mais un ETag connu existe (entrée "stale") -> GET
+           conditionnel (`If-None-Match`). Un 304 réutilise la valeur en
+           cache et rafraîchit sa fraîcheur (`stored_at`) sans retélécharger
+           le corps ; un 200 remplace intégralement l'entrée.
+        3. Aucune entrée connue (première requête) -> GET inconditionnel,
+           comportement identique à avant ce chantier.
+
+        404 volontairement non touché à cette étape (une seule variable de
+        comportement réseau à la fois, voir discussion) : reste géré comme
+        avant, sans ETag.
+        """
+        fresh = self._cache.get_entry(path)
+        if fresh is not MISSING:
+            return fresh.value
+
+        stale = self._cache.get_stale_entry(path)
+        headers = {}
+        if stale is not MISSING and stale.etag:
+            headers["If-None-Match"] = stale.etag
+
+        response = self._client.get(path, headers=headers)
 
         if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
             raise RateLimitExceeded(
                 f"Rate limit GitHub épuisé pour {path}. "
                 "Authentifie-toi via --token, GITHUB_TOKEN, ou `gh auth login`."
             )
+
+        if response.status_code == 304:
+            # Le serveur confirme que rien n'a changé : on réutilise la
+            # valeur déjà en cache et on rafraîchit sa fraîcheur, sans
+            # retélécharger ni réinterpréter aucun corps de réponse.
+            self._cache.set_entry(path, stale.value, etag=stale.etag, last_modified=stale.last_modified)
+            return stale.value
 
         if response.status_code == 404:
             # Absence de release/tag = résultat valide, pas une erreur.
@@ -119,7 +146,12 @@ class GitHubClient:
 
         response.raise_for_status()
         data = response.json()
-        self._cache.set(path, data)
+        self._cache.set_entry(
+            path,
+            data,
+            etag=response.headers.get("ETag"),
+            last_modified=response.headers.get("Last-Modified"),
+        )
         return data
 
     def get_latest_release(self, owner: str, repo: str) -> dict | None:

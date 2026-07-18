@@ -91,7 +91,7 @@ def audit_sources(
     """
     actions, runtimes, parse_errors = extract_all(sources, config)
 
-    action_resolutions = resolve_all(github_client, actions)
+    action_resolutions = resolve_all(github_client, actions, max_workers=config.max_concurrent_requests)
     runtime_resolutions = resolve_all_runtimes(runtime_client, runtimes)
 
     items = build_audit_items(actions, action_resolutions, runtimes, runtime_resolutions)

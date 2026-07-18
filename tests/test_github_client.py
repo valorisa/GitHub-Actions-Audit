@@ -1,5 +1,7 @@
 """Tests du client GitHub — httpx.MockTransport, aucun appel réseau réel."""
 
+import time
+
 import httpx
 import pytest
 
@@ -97,6 +99,136 @@ def test_forbidden_without_rate_limit_header_raises_http_error(tmp_path):
     client = make_client(tmp_path, handler)
     with pytest.raises(httpx.HTTPStatusError):
         client.get_latest_release("private-org", "private-repo")
+
+
+# --- Étape 2 du chantier ETag : GET conditionnel, uniquement à l'expiration
+# du TTL — le fast-path (aucun appel réseau tant que le TTL est valide)
+# reste strictement inchangé, vérifié explicitement ci-dessous.
+
+
+def test_fresh_ttl_entry_makes_zero_network_calls(tmp_path):
+    """Régression du fast-path existant : DEUX résolutions dans la même
+    fenêtre TTL ne doivent déclencher qu'UN seul appel réseau, ETag ou pas."""
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        return httpx.Response(200, json={"tag_name": "v5.0.0"}, headers={"ETag": '"abc123"'})
+
+    client = make_client(tmp_path, handler)
+    client.get_latest_release("actions", "checkout")
+    client.get_latest_release("actions", "checkout")
+
+    assert calls["count"] == 1
+
+
+def test_no_if_none_match_header_on_first_ever_request(tmp_path):
+    """Aucun ETag connu -> aucun header conditionnel envoyé."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "If-None-Match" not in request.headers
+        return httpx.Response(200, json={"tag_name": "v5.0.0"})
+
+    client = make_client(tmp_path, handler)
+    client.get_latest_release("actions", "checkout")
+
+
+def test_if_none_match_sent_when_ttl_expired_and_etag_known(tmp_path):
+    """Le cœur du chantier : TTL expiré + ETag connu -> GET conditionnel."""
+    cache = DiskCache(tmp_path / "cache.json", ttl_seconds=0)  # expire immédiatement
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(200, json={"tag_name": "v5.0.0"}, headers={"ETag": '"abc123"'})
+        assert request.headers.get("If-None-Match") == '"abc123"'
+        return httpx.Response(304)
+
+    client = GitHubClient(cache=cache, transport=httpx.MockTransport(handler))
+    client.get_latest_release("actions", "checkout")  # premier appel : 200, stocke l'ETag
+    time.sleep(0.01)  # garantit l'expiration du TTL=0
+    result = client.get_latest_release("actions", "checkout")  # second appel : 304 attendu
+
+    assert calls["count"] == 2
+    assert result["tag_name"] == "v5.0.0"
+
+
+def test_304_reuses_cached_value_without_reparsing_body(tmp_path):
+    cache = DiskCache(tmp_path / "cache.json", ttl_seconds=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("If-None-Match"):
+            return httpx.Response(304)
+        return httpx.Response(200, json={"tag_name": "v4.2.0"}, headers={"ETag": '"etag-1"'})
+
+    client = GitHubClient(cache=cache, transport=httpx.MockTransport(handler))
+    first = client.get_latest_release("actions", "checkout")
+    time.sleep(0.01)
+    second = client.get_latest_release("actions", "checkout")
+
+    assert first == second == {"tag_name": "v4.2.0"}
+
+
+def test_304_refreshes_ttl_so_next_call_hits_fast_path(tmp_path):
+    """Après un 304, la fraîcheur est rétablie : l'appel SUIVANT (dans la
+    nouvelle fenêtre TTL) ne doit plus toucher le réseau du tout."""
+    cache = DiskCache(tmp_path / "cache.json", ttl_seconds=3600)
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(200, json={"tag_name": "v5.0.0"}, headers={"ETag": '"abc123"'})
+        return httpx.Response(304)
+
+    client = GitHubClient(cache=cache, transport=httpx.MockTransport(handler))
+    client.get_latest_release("actions", "checkout")
+
+    # Force artificiellement l'expiration pour déclencher le second appel réseau (304),
+    # sans attendre le vrai TTL de 3600s.
+    cache._data["/repos/actions/checkout/releases/latest"]["stored_at"] -= 7200
+    client.get_latest_release("actions", "checkout")  # -> 304, rafraîchit stored_at
+    assert calls["count"] == 2
+
+    # stored_at étant rafraîchi, ce troisième appel doit rester sur le fast-path.
+    client.get_latest_release("actions", "checkout")
+    assert calls["count"] == 2  # inchangé : aucun nouvel appel réseau
+
+
+def test_200_after_stale_fully_replaces_value_and_etag(tmp_path):
+    """Le serveur a une nouvelle version : le 200 remplace tout, pas de
+    fusion partielle avec l'ancienne entrée."""
+    cache = DiskCache(tmp_path / "cache.json", ttl_seconds=0)
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(200, json={"tag_name": "v5.0.0"}, headers={"ETag": '"old-etag"'})
+        assert request.headers.get("If-None-Match") == '"old-etag"'
+        return httpx.Response(200, json={"tag_name": "v6.0.0"}, headers={"ETag": '"new-etag"'})
+
+    client = GitHubClient(cache=cache, transport=httpx.MockTransport(handler))
+    client.get_latest_release("actions", "checkout")
+    time.sleep(0.01)
+    result = client.get_latest_release("actions", "checkout")
+
+    assert result["tag_name"] == "v6.0.0"
+    entry = cache.get_stale_entry("/repos/actions/checkout/releases/latest")
+    assert entry.etag == '"new-etag"'
+
+
+def test_404_handling_unaffected_by_etag_changes(tmp_path):
+    """Le 404 n'est volontairement pas touché à cette étape : toujours
+    géré comme avant, sans ETag ni conditionnel."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "If-None-Match" not in request.headers
+        return httpx.Response(404)
+
+    client = make_client(tmp_path, handler)
+    assert client.get_latest_release("zaproxy", "action-baseline") is None
 
 
 def test_cache_avoids_second_network_call(tmp_path):

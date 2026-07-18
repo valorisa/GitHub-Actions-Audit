@@ -20,6 +20,7 @@ connue ?", y compris pour une action flottante (utile pour l'affichage :
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
@@ -28,6 +29,12 @@ from gha_audit.resolver.github_client import GitHubClient, RateLimitExceeded
 
 # Tags candidats à un tri semver : v1, v1.2, v1.2.3 (avec ou sans préfixe v).
 _SEMVER_TAG_RE = re.compile(r"^v?\d+(\.\d+){0,2}$")
+
+# Borne par défaut : assez pour masquer la latence réseau (le facteur
+# dominant mesuré en usage réel — voir profil scan-org), assez prudent
+# pour ne pas menacer le rate limit GitHub (5000/h authentifié) sur un
+# grand scan-org. Reste ajustable par l'appelant (voir GhaAuditConfig).
+DEFAULT_MAX_WORKERS = 8
 
 
 def _semver_sort_key(tag: str) -> tuple[int, ...]:
@@ -103,17 +110,44 @@ def resolve_action_version(client: GitHubClient, action: ActionUsage) -> Resolve
         )
 
 
-def resolve_all(client: GitHubClient, actions: list[ActionUsage]) -> dict[str, ResolvedVersion]:
-    """Résout une liste d'actions, dédupliquée par `slug` (owner/repo).
+def resolve_all(
+    client: GitHubClient, actions: list[ActionUsage], max_workers: int = DEFAULT_MAX_WORKERS
+) -> dict[str, ResolvedVersion]:
+    """Résout une liste d'actions, dédupliquée par `slug` (owner/repo),
+    en parallélisant les résolutions avec une concurrence bornée.
 
-    Deux occurrences du même `owner/repo` (deux fichiers différents, ou
-    deux steps du même workflow) ne déclenchent qu'une seule résolution —
-    le cache du GitHubClient l'aurait de toute façon évité côté réseau,
-    mais dédupliquer ici évite même le travail de tri des tags en double.
+    Les résolutions sont indépendantes (aucun partage d'état entre elles
+    hors le GitHubClient/DiskCache, thread-safe — voir cache.py), donc
+    parallélisables sans changer le résultat final, seulement le temps
+    total : c'est le levier de performance mesuré comme le plus rentable
+    en usage réel (temps réseau très majoritaire face au temps CPU).
+
+    RateLimitExceeded annule le travail restant (futures non démarrées)
+    plutôt que de laisser le pool consommer inutilement le budget API
+    déjà épuisé, puis se propage — comportement identique à la version
+    séquentielle : la session est compromise, pas une seule action.
     """
-    resolved: dict[str, ResolvedVersion] = {}
+    unique_actions: dict[str, ActionUsage] = {}
     for action in actions:
-        if action.slug in resolved:
-            continue
-        resolved[action.slug] = resolve_action_version(client, action)
+        if action.slug not in unique_actions:
+            unique_actions[action.slug] = action
+
+    if not unique_actions:
+        return {}
+
+    resolved: dict[str, ResolvedVersion] = {}
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    future_to_slug = {
+        executor.submit(resolve_action_version, client, action): slug
+        for slug, action in unique_actions.items()
+    }
+    try:
+        for future in as_completed(future_to_slug):
+            resolved[future_to_slug[future]] = future.result()
+    except RateLimitExceeded:
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+
     return resolved
