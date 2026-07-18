@@ -233,3 +233,30 @@ def test_extract_all_with_only_broken_sources_returns_empty_but_no_exception():
     assert actions == []
     assert runtimes == []
     assert len(parse_errors) == 1
+
+
+# --- Régression : indentation incohérente entre clés racine ---------------
+#
+# Cas observé sur un vrai dépôt public (`on:` indenté de 3 espaces alors que
+# `name:` est à la colonne 0 — GitHub Actions l'accepte silencieusement,
+# ruamel refuse à raison : c'est structurellement ambigu selon la spec YAML).
+#
+# Fixture minimale et autonome plutôt qu'une copie du fichier réel : le
+# dépôt d'origine est vivant et pourrait être corrigé, ce qui romprait le
+# lien entre la fixture et le cas historique sans qu'on s'en aperçoive.
+
+
+def test_inconsistent_root_key_indentation_is_isolated_not_crashed():
+    fixture_path = Path(__file__).parent / "fixtures" / "workflows" / "inconsistent_indentation.yml"
+    content = fixture_path.read_text(encoding="utf-8")
+    sources = [WorkflowSource(display_name="inconsistent_indentation.yml", content=content, local_path=fixture_path)]
+    config = GhaAuditConfig()
+
+    actions, runtimes, parse_errors = pipeline.extract_all(sources, config)
+
+    assert actions == []
+    assert runtimes == []
+    assert len(parse_errors) == 1
+    assert parse_errors[0].exception_type == "ScannerError"
+    assert parse_errors[0].line == 2
+    assert parse_errors[0].column is not None
